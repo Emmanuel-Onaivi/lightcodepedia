@@ -43,6 +43,29 @@ loses everything. A component's editable source comes from window.lcSourceOf
 #lcx-edit button { font: inherit; padding: .45em .9em; border-radius: 7px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; }
 #lcx-edit .lcx-apply { background: #0066cc; color: #fff; border-color: #0066cc; }
 #lcx-edit .lcx-keep { color: #166534; background: #dcfce7; border-color: #86efac; margin-left: auto; }
+#lcx-edit .lcx-tabs { display: flex; gap: .4em; padding: .55em 1em 0; background: #f3f4f6; }
+#lcx-edit .lcx-tabs[hidden] { display: none; }  /* display:flex must not out-rank hidden */
+/* the panes must pass the body's flex column straight through, or the
+   resize-corner contract breaks: a taller box must grow the text field */
+#lcx-pane-edit, #lcx-pane-notes { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+#lcx-pane-edit[hidden], #lcx-pane-notes[hidden] { display: none; }
+#lcx-edit .lcx-tab { border: 1px solid #cbd5e1; border-bottom: none; border-radius: 7px 7px 0 0;
+  background: #e5e7eb; padding: .35em .85em; font: inherit; cursor: pointer; }
+#lcx-edit .lcx-tab-on { background: #fff; font-weight: 600; }
+#lcx-pane-notes textarea { background: #fffbeb; color: #1f2937; caret-color: #92400e; border-color: #fcd34d; }
+/* a block the reader has annotated wears its mark — but only while the
+   x-ray is looking; the page reads clean otherwise. Top-right corner, a
+   margin bubble where a margin belongs — not trailing the last line. */
+body.lc-xray-deco .lc-noted { position: relative; }
+/* INSIDE the block's own box, top-right — offset left far enough to clear
+   the ⚙️/💬 badge, which is 26px wide and centred on the right edge.
+   It sat OUTSIDE the box (left:100%) for one release and vanished: a
+   pseudo-element past the edge is clipped by any ancestor that scrolls
+   (.markdown-body pre has overflow-x:auto) and runs off a narrow column
+   entirely. Never place it outside the box again. */
+body.lc-xray-deco .lc-noted::after { content: "💬"; position: absolute;
+  top: 0; right: 1.9em; font-size: .85em; opacity: .8;
+  pointer-events: none; }
 #lcx-toast { position: fixed; top: 1em; left: 50%; transform: translateX(-50%);
   padding: 0.55em 1.1em; border-radius: 6px; font-size: 0.88em; font-weight: 500; color: #fff;
   z-index: 100002; display: none; box-shadow: 0 3px 10px rgba(0,0,0,0.15); pointer-events: none; }
@@ -52,11 +75,16 @@ loses everything. A component's editable source comes from window.lcSourceOf
 <button id="lcx-gear" title="Edit this ✎" aria-label="Edit this block">⚙️</button>
 <dialog id="lcx-edit">
   <h4 id="lcx-edit-title">Edit</h4>
+  <div class="lcx-tabs" id="lcx-tabs" hidden>
+    <button type="button" class="lcx-tab lcx-tab-on" id="lcx-tab-edit">✏️ block</button>
+    <button type="button" class="lcx-tab" id="lcx-tab-notes">💬 my notes</button>
+  </div>
   <div class="lcx-body" id="lcx-edit-body"></div>
   <div class="lcx-bar">
     <button type="button" class="lcx-apply" id="lcx-apply">Apply</button>
     <button type="button" id="lcx-close">Close</button>
     <button type="button" class="lcx-keep" id="lcx-keep" title="Save — commits to your repo when connected">💾 Save</button>
+    <button type="button" class="lcx-keep" id="lcx-note-send" hidden title="Keep this note in your bench">💾 Keep note</button>
   </div>
 </dialog>
 <div id="lcx-toast"></div>
@@ -110,14 +138,11 @@ loses everything. A component's editable source comes from window.lcSourceOf
     if (node === gear || node === ghost || (dlg && dlg.contains(node))) return null;
     var el = node.nodeType === 1 ? node : node.parentElement;
     if (!el || !el.closest) return null;
-    /* Read-only is NEAREST-WINS, not any-ancestor: a vault lesson can hold
-       a bench slot ({: .embed save="…" }), and inside that slot the nearest
-       source is the learner's own repo. "Uneditable" must mean "unless a
-       nearer source says otherwise" — the nearest source is the truth about
-       what you are actually editing. */
-    var near = el.closest(".lc-run[data-lc-src-path], .lc-run[data-lc-readonly]");
-    if (near && near.hasAttribute("data-lc-readonly")) return null;
-    if (!near && el.closest(".lc-run[data-lc-readonly]")) return null;
+    /* Read-only no longer means NO gear — it means the gear is a 💬.
+       The lesson is the vault's, but the margin is the reader's: a note or
+       a question lands in THEIR bench and touches nothing here. The editor
+       stays refused (open() branches on the same test); only the doorway
+       changed. */
     /* DERIVED content (folder cards, unlocks…) is generated from other
        files — there is nothing here to edit. The gear offers the SLOT
        (the .folder line in the page source), never its derivatives. */
@@ -131,8 +156,23 @@ loses everything. A component's editable source comes from window.lcSourceOf
     return blk;
   }
 
+  /* Read-only is NEAREST-WINS, not any-ancestor: a vault lesson can hold
+     a bench slot ({: .embed save="…" }), and inside that slot the nearest
+     source is the learner's own repo. "Uneditable" must mean "unless a
+     nearer source says otherwise" — the nearest source is the truth about
+     what you are actually editing. */
+  function readonlyAt(el) {
+    if (!el || !el.closest) return false;
+    var near = el.closest(".lc-run[data-lc-src-path], .lc-run[data-lc-readonly]");
+    if (near) return near.hasAttribute("data-lc-readonly");
+    return !!el.closest(".lc-run[data-lc-readonly]");
+  }
+
   function showGhost(el) {
     ghostEl = el;
+    /* the badge says what the tap will do: repair a part you own, or leave
+       a note in your margin about one you don't */
+    gear.textContent = readonlyAt(el) ? "💬" : "⚙️";
     var r = el.getBoundingClientRect();
     ghost.style.left = (r.left - 3) + "px";
     ghost.style.top = (r.top - 3) + "px";
@@ -155,7 +195,15 @@ loses everything. A component's editable source comes from window.lcSourceOf
   }
   function track(e) {
     if (dlg && dlg.open) return;
-    if (!xrayActive(e)) { if (e.target !== gear) hideGhost(); return; }   // stay if the pointer is on the gear
+    var on = xrayActive(e);
+    /* annotated blocks show their 💬 only while the x-ray is looking */
+    document.body.classList.toggle("lc-xray-deco", on);
+    if (!on) { if (e.target !== gear) hideGhost(); return; }   // stay if the pointer is on the gear
+    if (!track._notesTried) {
+      track._notesTried = true;
+      loadNotes(e.target && e.target.nodeType === 1 ? e.target : MAIN)
+        .then(function (n) { if (n) decorate(); });
+    }
     if (e.target === gear || e.target === ghost) { keep(); return; }
     var b = blockAt(e.target);
     if (b) { keep(); showGhost(b); } else scheduleHide();
@@ -169,34 +217,63 @@ loses everything. A component's editable source comes from window.lcSourceOf
     isComponent = !!curSnap;
     var srcEl = isComponent ? parseSrc(curSnap) : block;
     if (!srcEl) return;
-
-    var body = document.getElementById("lcx-edit-body"); body.innerHTML = "";
-    if (isComponent) {
-      Array.prototype.forEach.call(srcEl.attributes, function (a) {
-        if (a.name === "id" || a.name === "class" || a.name.indexOf("data-") === 0) return;
-        var lab = document.createElement("label"); lab.textContent = a.name;
-        body.appendChild(lab); body.appendChild(knobInput(a.name, a.value));
-      });
-    }
-    var clab = document.createElement("label"); clab.textContent = "content";
-    var ta = document.createElement("textarea"); ta.id = "lcx-content"; ta.setAttribute("autofocus", "");
-    if (isComponent) {
-      var codeEl = srcEl.querySelector("code") || srcEl;
-      ta.value = (codeEl.textContent || "").replace(/\n$/, "");
-    } else {
-      ta.value = (block.textContent || "").trim();   // plain text — never raw HTML
-    }
-    body.appendChild(clab); body.appendChild(ta);
-    _origVal = ta.value;   // Keep's exact-match anchor into the page source
-
-    var name = isComponent
+    curName = isComponent
       ? "." + ((srcEl.className || "").split(" ").filter(function (c) { return c && c !== "highlighter-rouge" && c.indexOf("language-") !== 0; })[0] || curId)
       : (FRIENDLY[block.tagName] || block.tagName.toLowerCase());
-    document.getElementById("lcx-edit-title").textContent = "✏️ " + name + (isComponent && curId ? "  #" + curId : "");
+    if (isComponent && curId) curName += "  #" + curId;
+
+    curReadonly = readonlyAt(block);
+
+    /* two panes, both built now, toggled by the tabs — switching must not
+       lose a half-typed edit or a half-typed note */
+    var host = document.getElementById("lcx-edit-body"); host.innerHTML = "";
+    var paneEdit = document.createElement("div"); paneEdit.id = "lcx-pane-edit";
+    var paneNotes = document.createElement("div"); paneNotes.id = "lcx-pane-notes";
+    host.appendChild(paneEdit); host.appendChild(paneNotes);
+
+    /* 💬 the margin — prefilled with what the reader wrote last time, so a
+       note is a place they return to, not a message that vanished */
+    var nlab = document.createElement("label");
+    nlab.textContent = "my note on this block — kept in my bench, versioned";
+    var nta = document.createElement("textarea"); nta.id = "lcx-note-text";
+    paneNotes.appendChild(nlab); paneNotes.appendChild(nta);
+    var myAnchor = anchorOf(block, curId);
+    loadNotes(block).then(function (n) {
+      if (n && n.map[myAnchor] != null) nta.value = n.map[myAnchor];
+    });
+
+    var ta = null;
+    if (!curReadonly) {
+      var body = paneEdit;
+      if (isComponent) {
+        Array.prototype.forEach.call(srcEl.attributes, function (a) {
+          if (a.name === "id" || a.name === "class" || a.name.indexOf("data-") === 0) return;
+          var lab = document.createElement("label"); lab.textContent = a.name;
+          body.appendChild(lab); body.appendChild(knobInput(a.name, a.value));
+        });
+      }
+      var clab = document.createElement("label"); clab.textContent = "content";
+      ta = document.createElement("textarea"); ta.id = "lcx-content"; ta.setAttribute("autofocus", "");
+      if (isComponent) {
+        var codeEl = srcEl.querySelector("code") || srcEl;
+        ta.value = (codeEl.textContent || "").replace(/\n$/, "");
+      } else {
+        ta.value = (block.textContent || "").trim();   // plain text — never raw HTML
+      }
+      body.appendChild(clab); body.appendChild(ta);
+      _origVal = ta.value;   // Keep's exact-match anchor into the page source
+    } else {
+      _origVal = null;       /* the vault's blocks open as a margin, never as an editor */
+    }
+
+    document.getElementById("lcx-tabs").hidden = curReadonly;
+    document.getElementById("lcx-edit-title").textContent =
+      (curReadonly ? "💬 " : "✏️ ") + curName;
+    showTab(curReadonly ? "notes" : "edit");
 
     hideGhost();
     openDlg();                                     // modal top-layer → focus works, page handlers can't interfere
-    setTimeout(function () { ta.focus(); }, 0);
+    setTimeout(function () { (curReadonly ? nta : ta).focus(); }, 0);
   }
 
   function apply() {
@@ -221,7 +298,114 @@ loses everything. A component's editable source comes from window.lcSourceOf
     } catch (e) { if (window.console) console.warn("[lcx-edit]", e); }
   }
 
-  var _origVal = null;
+  var _origVal = null, curName = "", curReadonly = false, _notes = null;
+
+  /* ── 💬 the reader's margin ──────────────────────────────────────────────
+     One markdown file per lesson, in the LEARNER'S bench, next to the work
+     they already keep there: _03_broken_wire.notes.md. The underscore keeps
+     it off the folder's cards (show-private already owns that convention).
+     Inside, ONE `## <anchor>` section per block — the anchor is #id when
+     the block has one, otherwise the block's first words in «guillemets».
+     The margin is a PLACE, not a chute: reopening a block shows the note,
+     editing rewrites its section, clearing deletes it — and git keeps the
+     whole story, so nothing is ever really lost. The file itself stays a
+     readable page for whoever opens it later (the learner, or the teacher
+     through the roster, which already names every student's bench). */
+  function anchorOf(el, id) {
+    return id ? "#" + id
+      : "«" + ((((el && el.textContent) || "").trim().replace(/\s+/g, " ").slice(0, 60)) || "page") + "»";
+  }
+  function notesPathFor(fromEl) {
+    var runRoot = fromEl && fromEl.closest ? fromEl.closest(".lc-run[data-lc-src-path]") : null;
+    var fabEl = document.getElementById("ed-fab");
+    var lessonPath = runRoot ? runRoot.dataset.lcSrcPath
+      : ((fabEl && fabEl.dataset && fabEl.dataset.pagePath) ? "docs/" + fabEl.dataset.pagePath : "page");
+    var base = lessonPath.split("/").pop().replace(/\.[^.]*$/, "");
+    return { file: "_" + base + ".notes.md", lesson: lessonPath };
+  }
+  function parseNotes(text) {
+    var parts = String(text || "").split(/^## +/m);
+    var head = (parts.shift() || "").replace(/\s+$/, "");
+    var map = {}, order = [];
+    parts.forEach(function (p) {
+      var nl = p.indexOf("\n");
+      var key = (nl < 0 ? p : p.slice(0, nl)).trim();
+      if (!key) return;
+      map[key] = (nl < 0 ? "" : p.slice(nl + 1)).replace(/^\s+|\s+$/g, "");
+      order.push(key);
+    });
+    return { head: head, map: map, order: order };
+  }
+  function buildNotes(n) {
+    var out = n.head ? n.head + "\n" : "";
+    n.order.forEach(function (k) {
+      if (n.map[k] == null) return;              /* cleared — the section goes */
+      out += "\n## " + k + "\n\n" + n.map[k] + "\n";
+    });
+    return out;
+  }
+  function loadNotes(fromEl) {
+    if (_notes) return Promise.resolve(_notes);
+    var t = window.lcBench && window.lcBench.target ? window.lcBench.target(fromEl) : null;
+    if (!t || !t.repo || !t.pat) return Promise.resolve(null);
+    var p = notesPathFor(fromEl);
+    return window.lcBench.read(p.file, fromEl).then(function (f) {
+      var parsed = parseNotes(f ? f.text : "");
+      if (!parsed.head) parsed.head = "# 💬 " + p.lesson + " — notes";
+      _notes = { file: p.file, sha: f ? f.sha : null, head: parsed.head,
+                 map: parsed.map, order: parsed.order };
+      return _notes;
+    }).catch(function () { return null; });
+  }
+  function saveNote(anchor, text, fromEl) {
+    return loadNotes(fromEl).then(function (n) {
+      if (!n) throw new Error("no bench connected");
+      text = String(text || "").trim();
+      if (text) { if (n.order.indexOf(anchor) < 0) n.order.push(anchor); n.map[anchor] = text; }
+      else n.map[anchor] = null;
+      return window.lcBench.write(n.file, buildNotes(n), "💬 " + n.file, n.sha, fromEl)
+        .then(function (s) { n.sha = s || n.sha; return n; });
+    });
+  }
+  /* the at-a-glance layer: every block whose anchor has a note carries
+     .lc-noted; the CSS shows the mark only while the x-ray is looking */
+  function decorate() {
+    if (!_notes || !MAIN) return;
+    var blocks = MAIN.querySelectorAll("[data-lc-id]," + BLOCK_SEL);
+    Array.prototype.forEach.call(blocks, function (b) {
+      var id = (b.getAttribute && (b.getAttribute("data-lc-id") || b.id)) || "";
+      var v = _notes.map[anchorOf(b, id)];
+      b.classList.toggle("lc-noted", v != null && v !== "");
+    });
+  }
+  function showTab(which) {
+    var edit = which === "edit";
+    document.getElementById("lcx-pane-edit").hidden = !edit;
+    document.getElementById("lcx-pane-notes").hidden = edit;
+    document.getElementById("lcx-tab-edit").classList.toggle("lcx-tab-on", edit);
+    document.getElementById("lcx-tab-notes").classList.toggle("lcx-tab-on", !edit);
+    document.getElementById("lcx-apply").hidden = !edit;
+    document.getElementById("lcx-keep").hidden = !edit;
+    document.getElementById("lcx-note-send").hidden = edit;
+    if (!edit) { var ta = document.getElementById("lcx-note-text");
+                 if (ta) setTimeout(function () { ta.focus(); }, 0); }
+  }
+  function keepNote() {
+    var ta = document.getElementById("lcx-note-text");
+    if (!ta) { closeDlg(); return; }
+    var t = window.lcBench && window.lcBench.target ? window.lcBench.target(curEl) : null;
+    if (!t || !t.repo || !t.pat) {
+      lcxToast("Connect your bench to keep notes — they live in your own space.", false);
+      closeDlg(); return;
+    }
+    saveNote(anchorOf(curEl, curId), ta.value, curEl).then(function () {
+      lcxToast("Kept in your bench ✓", true);
+      decorate();
+    }).catch(function (e) {
+      lcxToast("Couldn't save the note: " + ((e && e.message) || e), false);
+    });
+    closeDlg();
+  }
 
   /* Connected builders commit inline edits for real — fence surgery on the
      page's own source, exact-match-or-abort so it can never corrupt a page.
@@ -266,7 +450,90 @@ loses everything. A component's editable source comes from window.lcSourceOf
     return String(text).replace(new RegExp("([(\"'\\s])" + esc + "/", "g"), "$1/");
   }
 
-  function commitInline(pat, repo, path, before, after, label, onOk, ordinal) {
+  /* ── the two source transforms ───────────────────────────────────────
+     What the editor can change in a markdown file: the TEXT of a block,
+     and the KNOBS on its IAL line. Both are pure string→string, so the
+     same rewrite serves the page's own file and a learner's bench file
+     without a second, subtly different code path. null = refuse. */
+  function replaceBlockIn(src, before, after, ordinal) {
+    /* POSITION is the identity, not the text. Markdown without a fence has
+       no unique delimiter, so "the text appears twice" is ordinary, not an
+       edge case — and refusing there made Keep unusable on plain prose.
+       When the same text occurs more than once, the caller says WHICH one
+       by ordinal (the block's rank among identical blocks on the page), and
+       we splice that range. Zero occurrences still refuses: that means the
+       rendered text is not what the file holds, and no position can be
+       inferred from it. */
+    var hits = [], from = 0, at;
+    while ((at = src.indexOf(before, from)) >= 0) { hits.push(at); from = at + 1; }
+    var i = hits.length === 1 ? hits[0]
+          : (hits.length > 1 && ordinal != null && hits[ordinal] != null) ? hits[ordinal]
+          : -1;
+    replaceBlockIn.hits = hits.length;
+    if (i < 0) return null;
+    return src.slice(0, i) + after + src.slice(i + before.length);
+  }
+
+  /* A knob lives on the IAL line that names the component:
+       {: .datagrid #wired source="ozaukee" height="180" }
+     Find the line carrying #id and rewrite the values that moved (adding a
+     knob the author never wrote, if the learner filled an empty one). This
+     is the wiring itself — the one thing a "connect the parts" lesson asks
+     a learner to change, and until now the only edit Keep refused. */
+  function setKnobsIn(src, id, knobs) {
+    if (!id) return null;
+    var lines = String(src).split("\n");
+    var idRe = new RegExp("#" + id.replace(/[^\w-]/g, "") + "(?![\\w-])");
+    var hit = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf("{:") < 0 || !idRe.test(lines[i])) continue;
+      hit = i; break;
+    }
+    if (hit < 0) return null;
+    var line = lines[hit];
+    Object.keys(knobs).forEach(function (k) {
+      var val = String(knobs[k]);
+      var re = new RegExp("(\\b" + k + '=")[^"]*(")');
+      if (re.test(line)) line = line.replace(re, function (m, a, b) { return a + val + b; });
+      else line = line.replace(/\s*\}\s*$/, " " + k + '="' + val + '" }');
+    });
+    lines[hit] = line;
+    return lines.join("\n");
+  }
+
+  /* ONE edit, ONE transform. Text and knobs are both string→string rewrites,
+     so a single function describes the whole edit and can then be pointed at
+     either file that might hold it — the page's own source or a learner's
+     bench. It also makes "retitled the block AND rewired it" one commit
+     instead of two that race for the same sha. */
+  function editTransform(opts) {
+    /* The diagnostics ride ON the transform. commitTransform cannot know what
+       a refusal was looking for, and discarding that fact — "couldn't locate"
+       fits a dozen causes — cost three rounds of guessing once already. */
+    var xf = function (src) {
+      var out = String(src);
+      if (opts.text) {
+        var before = unhealBase(opts.text.before), after = unhealBase(opts.text.after);
+        out = replaceBlockIn(out, before, after, opts.text.ordinal);
+        xf.diag = { anchor: before.slice(0, 200), hits: replaceBlockIn.hits,
+                    ordinal: opts.text.ordinal };
+        if (out == null) return null;
+      }
+      if (opts.knobs) {
+        var wired = setKnobsIn(out, opts.id, opts.knobs);
+        if (wired == null) {
+          /* no IAL line carries this #id — the knobs have nowhere to land */
+          xf.diag = { anchor: "{: #" + (opts.id || "") + " }", hits: 0, ordinal: null };
+          return null;
+        }
+        out = wired;
+      }
+      return out;
+    };
+    return xf;
+  }
+
+  function commitTransform(pat, repo, path, transform, label, onOk) {
     var api = "https://api.github.com/repos/" + repo + "/contents/" + path;
     var H = { Authorization: "Bearer " + pat, Accept: "application/vnd.github+json" };
     /* no-store: the runner fetches this same URL with Accept raw — some
@@ -276,35 +543,18 @@ loses everything. A component's editable source comes from window.lcSourceOf
     fetch(api, { headers: H, cache: "no-store" }).then(jsonOf).then(function (d) {
       if (!d.content) throw new Error(d.message || "load failed");
       var src = decodeURIComponent(escape(atob(d.content.replace(/\n/g, ""))));
-      /* POSITION is the identity, not the text. Markdown without a fence has
-         no unique delimiter, so "the text appears twice" is ordinary, not an
-         edge case — and refusing there made Keep unusable on plain prose.
-         When the same text occurs more than once, the caller says WHICH one
-         by ordinal (the block's rank among identical blocks on the page), and
-         we splice that range. Zero occurrences still refuses: that means the
-         rendered text is not what the file holds, and no position can be
-         inferred from it. */
-      before = unhealBase(before);
-      after = unhealBase(after);
-      var hits = [], from = 0, at;
-      while ((at = src.indexOf(before, from)) >= 0) { hits.push(at); from = at + 1; }
-      var i = hits.length === 1 ? hits[0]
-            : (hits.length > 1 && ordinal != null && hits[ordinal] != null) ? hits[ordinal]
-            : -1;
-      if (i < 0) {
-        /* Leave the anchor behind. "Couldn't locate" fits a dozen causes and
-           the one fact that separates them — what we actually searched for —
-           was being discarded, which cost three rounds of guessing. */
-        var tEl = document.getElementById("lcx-toast");
+      var next;
+      try { next = transform(src); } catch (e) { next = null; }
+      if (next == null) {
+        var tEl = document.getElementById("lcx-toast"), dg = transform.diag || {};
         if (tEl) {
-          tEl.dataset.lcAnchor = JSON.stringify(before.slice(0, 200));
-          tEl.dataset.lcHits = String(hits.length);
-          tEl.dataset.lcOrdinal = String(ordinal);
+          tEl.dataset.lcAnchor = JSON.stringify(dg.anchor == null ? "" : dg.anchor);
+          tEl.dataset.lcHits = String(dg.hits);
+          tEl.dataset.lcOrdinal = String(dg.ordinal);
         }
         lcxToast("Couldn't safely locate this block in the page source — save it via the ✏️ page editor.", false);
         return;
       }
-      var next = src.slice(0, i) + after + src.slice(i + before.length);
       return fetch(api, {
         method: "PUT", headers: H,
         body: JSON.stringify({ message: "Inline edit: " + label,
@@ -314,6 +564,13 @@ loses everything. A component's editable source comes from window.lcSourceOf
         if (onOk) onOk(res.commit && res.commit.sha);
       });
     }).catch(function (e) { lcxToast("Save failed: " + e.message, false); });
+  }
+
+  /* the text-only door, kept thin so every existing caller is unaffected */
+  function commitInline(pat, repo, path, before, after, label, onOk, ordinal) {
+    commitTransform(pat, repo, path,
+      editTransform({ text: { before: before, after: after, ordinal: ordinal } }),
+      label, onOk);
   }
 
   /* Shared so other components can write a block back without growing a
@@ -593,12 +850,31 @@ loses everything. A component's editable source comes from window.lcSourceOf
     }
   };
 
+  /* The knobs the learner actually moved, as {name: value}. This is the same
+     walk that used to answer only "did anything change?" — the map is what a
+     commit needs, and the boolean threw it away. */
+  function changedKnobs() {
+    var out = {}, any = false;
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#lcx-edit-body input[data-knob]"),
+      function (inp) {
+        var cur = inp.type === "checkbox" ? (inp.checked ? "true" : "false") : (inp.value || "").trim();
+        if (cur === (inp.dataset.orig || "")) return;
+        out[inp.getAttribute("data-knob")] = cur; any = true;
+      });
+    return any ? out : null;
+  }
+
   function keepChanges() {
     /* Inside a runner render the true source is the RENDERED file (the /run
        page itself has no_edit and knows nothing) — the runner stamps it on
        its root. Resolve BEFORE apply(): re-rendering a component detaches
        curEl, and closest() on a detached node finds no ancestors. */
     var runRoot = curEl && curEl.closest ? curEl.closest(".lc-run[data-lc-src-path]") : null;
+    /* Same trap, same reason, one question later: which file owns this block?
+       Inside a bench slot the answer is the learner's own, and after apply()
+       the detached curEl can no longer be asked. */
+    var slot = (window.lcBenchSlotOf && curEl) ? window.lcBenchSlotOf(curEl) : null;
     apply();
     var pat = localStorage.getItem("lc_ed_pat"), repo = localStorage.getItem("lc_ed_repo");
     var fabEl = document.getElementById("ed-fab");
@@ -606,40 +882,65 @@ loses everything. A component's editable source comes from window.lcSourceOf
     var ta = document.getElementById("lcx-content");
     var commitRepo = (runRoot && runRoot.dataset.lcSrcRepo) || repo;
     var commitPath = runRoot ? runRoot.dataset.lcSrcPath : (pagePath ? "docs/" + pagePath : "");
-    if (pat && commitRepo && commitPath && ta && _origVal) {
-      var knobsChanged = Array.prototype.some.call(
-        document.querySelectorAll("#lcx-edit-body input[data-knob]"),
-        function (inp) {
-          var cur = inp.type === "checkbox" ? (inp.checked ? "true" : "false") : (inp.value || "").trim();
-          return cur !== (inp.dataset.orig || "");
-        });
-      if (ta.value !== _origVal) {
-        var label = ((document.getElementById("lcx-edit-title") || {}).textContent || "block").replace(/^✏️\s*/, "");
-        /* on confirmed commit, refresh the fence snapshot so the NEXT edit
-           anchors on the committed content — without this a second Keep after
-           a successful one can't match the file until a reload (stale anchor) */
-        var okId = curId, okSnap = curSnap, okVal = ta.value;
-        /* Which one of the identical blocks is this? Rank it among the page's
-           blocks whose source text matches, so an ambiguous file position is
-           resolved by WHERE the learner clicked, not by hoping for uniqueness. */
-        var ordinal = null;
-        try {
-          var same = Array.prototype.filter.call(
-            (MAIN || document).querySelectorAll(curEl ? curEl.tagName : "p"),
-            function (n) { return (n.textContent || "").trim() === _origVal; });
-          var k = same.indexOf(curEl);
-          if (k >= 0) ordinal = k;
-        } catch (e) {}
-        commitInline(pat, commitRepo, commitPath, _origVal, ta.value, label, function (sha) {
-          lcxToast("Saved" + (sha ? " · " + String(sha).slice(0, 7) : "") + " ✓", true);
-          if (!okId || !window.lcSetSourceOf) return;
-          var s = parseSrc(okSnap); if (!s) return;
+
+    var knobs = changedKnobs();
+    /* _origVal must be non-empty to anchor on: an empty needle matches at
+       every offset, which is not a position at all. */
+    var textChanged = !!(ta && _origVal && ta.value !== _origVal);
+    if (!knobs && !textChanged) { closeDlg(); return; }   // nothing moved
+
+    /* Which one of the identical blocks is this? Rank it among the page's
+       blocks whose source text matches, so an ambiguous file position is
+       resolved by WHERE the learner clicked, not by hoping for uniqueness. */
+    var ordinal = null;
+    if (textChanged) {
+      try {
+        var same = Array.prototype.filter.call(
+          (MAIN || document).querySelectorAll(curEl ? curEl.tagName : "p"),
+          function (n) { return (n.textContent || "").trim() === _origVal; });
+        var k = same.indexOf(curEl);
+        if (k >= 0) ordinal = k;
+      } catch (e) {}
+    }
+    var label = ((document.getElementById("lcx-edit-title") || {}).textContent || "block").replace(/^✏️\s*/, "");
+    var xf = editTransform({
+      id: curId,
+      knobs: knobs,
+      text: textChanged ? { before: _origVal, after: ta.value, ordinal: ordinal } : null
+    });
+
+    /* A bench slot OWNS its file, so it does the writing: it creates the file
+       the learner has never had, lays the author's starter down first so the
+       first change is readable in 🕘, and repaints from what was saved.
+       Routing this through commitTransform instead 404s on that first save. */
+    if (slot) {
+      slot.save(xf, "Inline edit: " + label).then(function (sha) {
+        lcxToast("Saved" + (sha ? " · " + String(sha).slice(0, 7) : "") + " ✓", true);
+      }).catch(function (e) {
+        lcxToast("Save failed: " + (e && e.message ? e.message : e), false);
+      });
+      closeDlg();
+      return;
+    }
+
+    if (pat && commitRepo && commitPath) {
+      /* on confirmed commit, refresh the fence snapshot so the NEXT edit
+         anchors on the committed content — without this a second Keep after
+         a successful one can't match the file until a reload (stale anchor),
+         and a second ⚙️ hands back the wire the learner already replaced */
+      var okId = curId, okSnap = curSnap, okVal = ta ? ta.value : "";
+      var okKnobs = knobs, okText = textChanged;
+      commitTransform(pat, commitRepo, commitPath, xf, label, function (sha) {
+        lcxToast("Saved" + (sha ? " · " + String(sha).slice(0, 7) : "") + " ✓", true);
+        if (!okId || !window.lcSetSourceOf) return;
+        var s = parseSrc(okSnap); if (!s) return;
+        if (okKnobs) Object.keys(okKnobs).forEach(function (n) { s.setAttribute(n, okKnobs[n]); });
+        if (okText) {
           var c = s.querySelector("code");
           if (c) c.textContent = okVal + "\n"; else s.textContent = okVal;
-          window.lcSetSourceOf(okId, s.outerHTML);
-        }, ordinal);
-      }
-      if (knobsChanged) alert("Knob changes aren't committed inline yet — keep them via the ✏️ page editor.");
+        }
+        window.lcSetSourceOf(okId, s.outerHTML);
+      });
       closeDlg();
       return;
     }
@@ -657,6 +958,9 @@ loses everything. A component's editable source comes from window.lcSourceOf
     onTap(document.getElementById("lcx-close"), closeDlg);
     onTap(document.getElementById("lcx-apply"), apply);
     onTap(document.getElementById("lcx-keep"), keepChanges);
+    onTap(document.getElementById("lcx-note-send"), keepNote);
+    onTap(document.getElementById("lcx-tab-edit"), function () { showTab("edit"); });
+    onTap(document.getElementById("lcx-tab-notes"), function () { showTab("notes"); });
     /* Click the backdrop to close. The catch: a <dialog>'s own resize corner
        and its backdrop BOTH report the dialog as the click target, so
        dragging the corner made the editor vanish the moment you let go.

@@ -8,6 +8,10 @@ Knobs:
   cols="auto"       grid columns (default auto-fit) or a fixed number
   sort="name"       initial order: "name" (default, alphabetical) or "recent"
   show-private      include _-prefixed files
+  parent="true"     add a "go up" line under the cards, pointing at the
+                    PARENT folder's index — so a reader who finished a
+                    module can climb one level and pick the next. Silently
+                    absent at the repo root, where up means nothing.
   open="runner"     scan a repo path OUTSIDE docs/ (courses/, hubs/…) via the
                     API (author key) and open every card in the runner —
                     the same cards, pointed at unrendered material
@@ -29,6 +33,14 @@ Auto-included by docs/_layouts/default.html.
 .lc-card-tag[data-tag] { cursor: pointer; }
 .lc-card-tag[data-tag]:hover { background: #bae6fd; }
 .lc-card-date { font-size: 0.72em; color: #6b7280; margin-top: 0.3em; }
+/* the way out of a folder — its own line, under the siblings */
+.lc-folder-up { margin: 0.9em 0 0; font-size: 0.9em; }
+.lc-folder-up a { text-decoration: none; }
+.lc-folder-up a:hover { text-decoration: underline; }
+/* "⬆️ Up" wears the chip look of the bar it sits in, but it is an <a>: a real
+   link, so long-press/middle-click/open-in-new-tab all behave. */
+a.lc-folder-up-pill, a.lc-folder-up-pill:visited { text-decoration: none; color: #374151; }
+a.lc-folder-up-pill:hover { border-color: #0066cc; background: #eef4ff; color: #0066cc; }
 /* ⚙️ workbench affordances — X-ray mode only */
 .lc-card:has(> .lc-card-workrow) { display: flex; flex-direction: column; }
 .lc-card-workrow { display: flex; align-items: center; justify-content: space-between; gap: 0.5em; margin-top: auto; padding-top: 0.5em; border-top: 1px dashed #e5e7eb; }
@@ -110,7 +122,7 @@ Auto-included by docs/_layouts/default.html.
   }
 
   /* ── shared card pipeline (also used by related.md) ─────────────── */
-  /* scan a page's markdown for its hidden .feature blocks → [{status, tags}] */
+  /* scan a page's markdown for its hidden .feature blocks → [{status, tags, id}] */
   function scanFeatures(text) {
     var scanText = text
       .replace(/(`{3,})[^\n]*\n[\s\S]*?\1/g, "")
@@ -119,9 +131,39 @@ Auto-included by docs/_layouts/default.html.
     while ((fm = fRe.exec(scanText)) !== null) {
       var sm = fm[1].match(/\bstatus="(\w+)"/);
       var tm = fm[1].match(/\btags="([^"]*)"/);
-      features.push({ status: sm ? sm[1] : "", tags: tm ? tm[1] : "" });
+      /* the #id too — it is half of the key a remembered run is filed under.
+         Blank the quoted values first: the # in title="Step #1" names
+         nothing. */
+      var im = fm[1].replace(/"[^"]*"/g, '""').match(/#([A-Za-z][\w-]*)/);
+      features.push({ status: sm ? sm[1] : "", tags: tm ? tm[1] : "",
+                      id: im ? im[1] : "" });
     }
     return features;
+  }
+
+  /* ── the reader's own run outranks the author's declaration ──────────────
+     lc_features remembers what a run actually made of a .feature, and the
+     PAGE has always shown it. The CARD did not: its dots and its
+     data-nonpassing came from the status= parsed out of the markdown, so a
+     learner's green run showed on the page while the card that leads there
+     still said pending. Overlay it here rather than in score.md's
+     decorateCards, because folder.md and related.md share this one card
+     pipeline — do it downstream and only half the site agrees.
+     The author's declaration stays the base; evidence beats a claim. */
+  function rememberedFeatures(url, features) {
+    if (!features || !features.length) return features;
+    var all;
+    try { all = JSON.parse(localStorage.getItem("lc_features") || "{}"); }
+    catch (e) { return features; }
+    var page = window.lcPageScores ? window.lcPageScores.norm(url) : url;
+    return features.map(function (f, i) {
+      /* the same "Nth .feature" convention cardName() uses, so an author who
+         never wrote an id still gets a stable key */
+      var rec = all[page + "#" + ((f && f.id) || ("n" + i))];
+      if (!rec || !rec.status) return f;
+      return { status: rec.status, tags: (f && f.tags) || "",
+               id: (f && f.id) || "", remembered: true };
+    });
   }
 
   /* count the .quiz widgets on a page (skip code fences / inline code) so a
@@ -150,18 +192,19 @@ Auto-included by docs/_layouts/default.html.
      opts.clickableTags=false renders plain (non-filtering) tag chips. */
   function buildCardHtml(item, opts) {
     opts = opts || {};
-    var tagList = cardTagList(item.features);
-    var feats = item.features || [];
+    var feats = rememberedFeatures(item.url, item.features) || [];
+    var tagList = cardTagList(feats);
     var nonpassing = feats.filter(function(f) { return ((f && f.status) || "none") !== "passing"; }).length;
+    var mine = feats.some(function(f) { return f && f.remembered; }) ? ' data-lc-remembered="1"' : '';
     var tagsAttr = tagList.length ? ' data-tags="' + escapeHtml(tagList.join(" ")) + '"' : '';
     var style = item.isSubdir ? ' style="background:#f0f2f5"' : '';
-    var card = '<div class="lc-card" data-url="' + item.url + '"' + (item.path ? (item.isSubdir ? ' data-dirpath="' : ' data-path="') + escapeHtml(item.path) + '"' : '') + tagsAttr + ' data-nonpassing="' + nonpassing + '" data-quizzes="' + (item.quizzes || 0) + '"' + (item.date ? ' data-date="' + escapeHtml(item.date) + '"' : '') + style + '><h3><a href="' + item.url + '">' + escapeHtml(item.title) + '</a></h3>';
+    var card = '<div class="lc-card" data-url="' + item.url + '"' + (item.path ? (item.isSubdir ? ' data-dirpath="' : ' data-path="') + escapeHtml(item.path) + '"' : '') + tagsAttr + ' data-nonpassing="' + nonpassing + '" data-quizzes="' + (item.quizzes || 0) + '"' + (item.date ? ' data-date="' + escapeHtml(item.date) + '"' : '') + mine + style + '><h3><a href="' + item.url + '">' + escapeHtml(item.title) + '</a></h3>';
     if (item.snippet) card += '<p style="font-size:0.85em;color:#555;margin:0.3em 0 0">' + escapeHtml(item.snippet) + '</p>';
     var dateLbl = fmtDate(item.date);
     if (dateLbl) card += '<div class="lc-card-date">📅 ' + escapeHtml(dateLbl) + '</div>';
-    if (item.features && item.features.length) {
+    if (feats.length) {
       var counts = {};
-      item.features.forEach(function(f) { var s = (f && f.status) || "none"; counts[s] = (counts[s] || 0) + 1; });
+      feats.forEach(function(f) { var s = (f && f.status) || "none"; counts[s] = (counts[s] || 0) + 1; });
       var dots = "";
       if (counts.passing) dots += "<span class='lc-feat-dot lc-feat-passing' title='" + counts.passing + " passing feature" + (counts.passing > 1 ? "s" : "") + "'>● " + counts.passing + "</span>";
       if (counts.failing)  dots += "<span class='lc-feat-dot lc-feat-failing'  title='" + counts.failing  + " failing feature"  + (counts.failing  > 1 ? "s" : "") + "'>✗ " + counts.failing  + "</span>";
@@ -190,6 +233,7 @@ Auto-included by docs/_layouts/default.html.
     if (!a) return;
     var cols = el.getAttribute("cols") || "auto";
     var showPrivate = el.getAttribute("show-private") === "true";
+    var wantParent = el.getAttribute("parent") === "true";
     var sortMode = (el.getAttribute("sort") || "name").toLowerCase();   // "name" (default) | "recent"
     /* Rendered INSIDE a bench (a runner render stamps its repo/path on the
        root)? Then scan THAT repo, not the site — a bench's index.md lists its
@@ -262,6 +306,72 @@ Auto-included by docs/_layouts/default.html.
     var mdUrl   = function (rp) { return "/" + rp.replace(/^docs\//, ""); };      // static .md on Pages
     var runUrl  = function (rp) { return "/run.html#src=gh:" + scanRepo + "/" + rp; };
     var cardUrl = function (rp) { return runnerMode ? runUrl(rp) : mdUrl(rp).replace(/\.md$/i, ""); };
+    /* parent="true" — one line under the cards, climbing to the folder that
+       CONTAINS this one. A reader who just finished a module needs a way up
+       before they can pick the next one, and a sibling list cannot offer it.
+       Deliberately silent at the root: "up" from the top is nowhere, and an
+       author gets to decide where climbing helps (hence the knob, not a
+       default). Placed AFTER the cards — the siblings are the main road, up
+       is the way out. */
+    function addParentLine(resolvedPath) {
+      if (!wantParent || addParentLine.done) return;
+      addParentLine.done = true;
+      /* A bare `{: .folder }` resolves to "." — "the folder I live in" —
+         which has no parent to compute. The render root knows the real
+         directory, so fall back to it; without either there is no up. */
+      var here = String(resolvedPath || "").replace(/\/+$/, "");
+      if (!here || here === "." || here === "./") here = runBaseDir || "";
+      if (!here) return;
+      var parts = here.split("/");
+      parts.pop();                                  /* drop this folder */
+      if (!parts.length) return;                    /* at the root: no up */
+      var pPath = parts.join("/");
+      /* "Up" — the label, and nothing else. It used to read "⬆️ up to
+         micro_build_ai", which spends a whole line naming a folder the reader
+         is about to see anyway (Michel, 2026-08-05).
+         And it is a PILL in the filter bar, in the same far-right slot "➕ New"
+         takes when the shelf is writable — one place for "the thing you do
+         here that is not picking a card", whichever mode you are in. It falls
+         back to a line under the cards only when there is no bar to sit in. */
+      var href = cardUrl(pPath + "/index.md");
+      var pill = document.createElement("a");
+      pill.className = "lc-card-filter-chip lc-folder-up-pill";
+      pill.setAttribute("data-lc-derived", "1");     /* generated: no gear */
+      pill.href = href;
+      pill.textContent = "⬆️ Up";
+      pill.title = "The folder above";
+      _upPill = pill;
+      placeUpPill();
+      if (window.lcRebase) window.lcRebase(pill);
+    }
+    /* the bar is built asynchronously (it needs the cards' tags), so the pill
+       may be ready first or last — this runs on both paths and is idempotent */
+    function placeUpPill() {
+      if (!_upPill) return;
+      if (_bar && !_bar.contains(_upPill)) {
+        /* moving a node into the bar leaves the fallback <p> behind empty —
+           take it with us */
+        var old = _upPill.parentNode;
+        /* right-aligned like ➕ New; when both are present New keeps the edge
+           and Up sits just inside it, so the writable affordance stays put */
+        var np = _bar.querySelector("[data-newpage]");
+        _upPill.style.marginLeft = "auto";
+        if (np) { _bar.insertBefore(_upPill, np); np.style.marginLeft = "0.4em"; }
+        else { _bar.appendChild(_upPill); }
+        if (old && old !== _bar && old.parentNode && !old.children.length) {
+          old.parentNode.removeChild(old);
+        }
+        return;
+      }
+      if (!_bar && !_upPill.parentNode && wrap.parentNode) {
+        /* no filter bar on this shelf: keep the old line under the cards */
+        var line = document.createElement("p");
+        line.className = "lc-folder-up";
+        wrap.parentNode.insertBefore(line, wrap.nextSibling);
+        line.appendChild(_upPill);
+      }
+    }
+    var _upPill = null;
     var titleCase = function (s) { return s.replace(/\.md$/i, "").replace(/[-_]/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); }); };
     function fetchText(url) {
       return fetch(window.lcHref ? window.lcHref(url) : url).then(function (r) { return r.ok ? r.text() : null; });
@@ -786,6 +896,10 @@ Auto-included by docs/_layouts/default.html.
         bar.innerHTML = chips;
         wrap.parentNode.insertBefore(bar, wrap);
         _bar = bar;
+        /* the bar is built from the cards' tags, so it can appear after the up
+           pill was made (or be rebuilt when the mode changes) — claim its slot
+           on every build; placeUpPill is idempotent and a no-op with no pill */
+        placeUpPill();
         var npBtn = bar.querySelector("[data-newpage]");
         if (npBtn) npBtn.addEventListener("click", function () { newPagePrompt(npBtn); });
         function newPagePrompt(npBtn) {
@@ -1008,6 +1122,12 @@ Auto-included by docs/_layouts/default.html.
         var _rawPath = _resolved;
         if (window.lcBase && _rawPath.indexOf(window.lcBase + "/") === 0) _rawPath = _rawPath.slice(window.lcBase.length);
         path = _rawPath.replace(/^\/+|\/+$/g, "");
+        /* BEFORE refresh(): the way up must survive a folder that cannot
+           list anything — no key, empty directory, API error. Those are the
+           moments a reader is most stuck, and the first version of this only
+           ran on the happy paint path, so the exit vanished precisely when
+           it was needed. */
+        addParentLine(path);
         refresh();
       });
   }
